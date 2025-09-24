@@ -1,0 +1,47 @@
+# Verilog/FPGA工具生成的文件
+*.vcd
+*.fst
+*.wdb
+*.fdb_latency_info
+*.dat
+*.log
+*.rpt
+*.summary
+*.cache/
+*.runs/
+*.sim/
+*.ip_user_files/
+*.hw/
+*.gen/
+
+# 综合工具文件
+*.ngc
+*.bit
+*.dcp
+*.ltx
+*.prj
+
+# 仿真文件
+transcript
+work/
+*.vstf
+*.do.bak
+vsim.wlf
+modelsim.ini
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*~
+.#*
+\#*#
+
+# IDE文件
+.vscode/settings.json
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.bak
+*.orig
