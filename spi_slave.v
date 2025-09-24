@@ -31,7 +31,7 @@ module spi_slave (
         IDLE       = 3'b000,  // 空闲状态
         RW_BIT     = 3'b001,  // 接收读写控制位
         ADDR_BITS  = 3'b010,  // 接收地址位
-        DATA_BITS  = 3'b011   // 处理数据位
+        DATA_BITS  = 3'b100   // 处理数据位
     } spi_state_t;
     
     spi_state_t current_state, next_state;
@@ -49,73 +49,18 @@ module spi_slave (
     // 内部RAM (11位宽，16位深)
     reg [10:0] internal_ram [0:15];
     
-
-    
-    // 写入控制信号 - 只在posedge块中赋值
-    reg spi_write_req;
-    reg [10:0] spi_write_data;
-    reg [3:0] spi_write_addr;
-    
-    // 传感器数据加载控制 - 只在posedge块中赋值
-    reg sensor_load_req;
-    
-    // 触发信号 - 用于单周期脉冲检测
-    reg spi_write_trigger;
-    reg [10:0] spi_write_data_buf;
-    reg [3:0] spi_write_addr_buf;
-    reg sensor_load_trigger;
-    
-    // 脉冲检测（直接使用触发信号）
-    wire spi_write_pulse = spi_write_trigger;
-    wire sensor_load_pulse = sensor_load_trigger;
+    // 使用generate语句初始化RAM
+    genvar j;
+    generate
+        for (j = 0; j < 16; j = j + 1) begin : ram_init
+            initial begin
+                internal_ram[j] = 11'h0;
+            end
+        end
+    endgenerate
     
     integer i;
     
-    // 统一RAM写入控制：传感器数据加载优先级最高
-    always @(posedge spi_clk or negedge rst_n) begin
-        if (!rst_n) begin
-            spi_write_req <= 1'b0;
-            spi_write_data <= 11'h0;
-            spi_write_addr <= 4'h0;
-            sensor_load_req <= 1'b0;
-            for (i = 0; i < 16; i = i + 1) begin
-                internal_ram[i] <= 11'h0;
-            end
-        end 
-        else if (sensor_load_pulse) begin
-            // 传感器数据同时加载（最高优先级）
-                internal_ram[0] <= sensor_data_0;
-                internal_ram[1] <= sensor_data_1;
-                internal_ram[2] <= sensor_data_2;
-                internal_ram[3] <= sensor_data_3;
-                internal_ram[4] <= sensor_data_4;
-                internal_ram[5] <= sensor_data_5;
-                internal_ram[6] <= sensor_data_6;
-                internal_ram[7] <= sensor_data_7;
-                internal_ram[8] <= sensor_data_8;
-                internal_ram[9] <= sensor_data_9;
-                internal_ram[10] <= sensor_data_10;
-                internal_ram[11] <= sensor_data_11;
-                internal_ram[12] <= sensor_data_12;
-                internal_ram[13] <= sensor_data_13;
-                internal_ram[14] <= sensor_data_14;
-                internal_ram[15] <= sensor_data_15;
-                sensor_load_req <= 1'b0;
-                spi_write_req <= 1'b0;
-            end
-            // SPI写入请求
-            else if (spi_write_pulse) begin
-                internal_ram[spi_write_addr_buf] <= spi_write_data_buf;
-                spi_write_req <= 1'b1;
-                spi_write_data <= spi_write_data_buf;
-                spi_write_addr <= spi_write_addr_buf;
-            end
-            // 默认情况 - 只清除请求信号
-            else begin
-                spi_write_req <= 1'b0;
-            end
-    end
-
     // 状态机状态寄存器更新
     always @(negedge spi_clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -172,10 +117,6 @@ module spi_slave (
             addr_shift <= 4'b0;
             read_data_reg <= 11'b0;
             addr_received <= 1'b0;
-            spi_write_trigger <= 1'b0;
-            spi_write_data_buf <= 11'h0;
-            spi_write_addr_buf <= 4'h0;
-            sensor_load_trigger <= 1'b0;
         end else if (csb) begin
             // CSB高电平时清除状态
             transaction_active <= 1'b0;
@@ -186,79 +127,89 @@ module spi_slave (
             target_addr <= 4'b0;
             shift_reg <= 16'b0;
             read_data_reg <= 11'b0;
-            spi_write_trigger <= 1'b0;
-            spi_write_data_buf <= 11'h0;
-            spi_write_addr_buf <= 4'h0;
-            sensor_load_trigger <= 1'b0;
         end else begin
             // LDB检测（仅在前5个时钟周期，最高优先级）
             if (bit_counter <= 5'd4 && !ldb) begin
-                sensor_load_trigger <= 1'b1;
-            end
-            
-            // 状态机处理
-            case (current_state)
-                IDLE: begin
-                    if (!transaction_active) begin
-                        // 开始新的事务
-                        transaction_active <= 1'b1;
-                        bit_counter <= 5'b0;
-                        shift_reg <= 16'b0;
-                        addr_received <= 1'b0;
-                        addr_shift <= 4'b0;
-                    end
-                end
-                
-                RW_BIT: begin
-                    // 第0位：读写控制位
-                    if (bit_counter == 5'd0) begin
-                        read_mode <= mosi;
-                        addr_shift <= 4'b0000;
-                    end
-                    // 接收数据并递增计数器
-                    shift_reg <= {shift_reg[14:0], mosi};
-                    bit_counter <= bit_counter + 1'b1;
-                end
-                
-                ADDR_BITS: begin
-                    // 第1-4位：地址接收
-                    if (bit_counter >= 5'd1 && bit_counter <= 5'd4) begin
-                        addr_shift <= {addr_shift[2:0], mosi};
-                        if (bit_counter == 5'd4) begin
-                            target_addr <= {addr_shift[2:0], mosi};
-                            addr_received <= 1'b1;
-                            // 读模式时立即锁存数据
-                            if (read_mode) begin
-                                read_data_reg <= internal_ram[{addr_shift[2:0], mosi}];
-                            end
+                // LDB触发：直接加载传感器数据到RAM
+                internal_ram[0] <= sensor_data_0;
+                internal_ram[1] <= sensor_data_1;
+                internal_ram[2] <= sensor_data_2;
+                internal_ram[3] <= sensor_data_3;
+                internal_ram[4] <= sensor_data_4;
+                internal_ram[5] <= sensor_data_5;
+                internal_ram[6] <= sensor_data_6;
+                internal_ram[7] <= sensor_data_7;
+                internal_ram[8] <= sensor_data_8;
+                internal_ram[9] <= sensor_data_9;
+                internal_ram[10] <= sensor_data_10;
+                internal_ram[11] <= sensor_data_11;
+                internal_ram[12] <= sensor_data_12;
+                internal_ram[13] <= sensor_data_13;
+                internal_ram[14] <= sensor_data_14;
+                internal_ram[15] <= sensor_data_15;
+            end else begin
+                // 状态机处理
+                case (current_state)
+                    IDLE: begin
+                        if (!transaction_active) begin
+                            // 开始新的事务
+                            transaction_active <= 1'b1;
+                            bit_counter <= 5'b0;
+                            shift_reg <= 16'b0;
+                            addr_received <= 1'b0;
+                            addr_shift <= 4'b0;
                         end
                     end
-                    // 接收数据并递增计数器
-                    shift_reg <= {shift_reg[14:0], mosi};
-                    bit_counter <= bit_counter + 1'b1;
-                end
-                
-                DATA_BITS: begin
-                    // 第5-15位：数据位处理
-                    if (bit_counter == 5'd15) begin
-                        if (!read_mode) begin
-                            // 写模式：设置写入触发信号和数据缓存
-                            spi_write_trigger <= 1'b1;
-                            spi_write_data_buf <= {shift_reg[9:0], mosi};
-                            spi_write_addr_buf <= target_addr;
+                    
+                    RW_BIT: begin
+                        // 第0位：读写控制位
+                        if (bit_counter == 5'd0) begin
+                            read_mode <= mosi;
+                            addr_shift <= 4'b0000;
                         end
-                        bit_counter <= 5'b0;  // 重置计数器准备下一帧
-                    end else begin
                         // 接收数据并递增计数器
                         shift_reg <= {shift_reg[14:0], mosi};
                         bit_counter <= bit_counter + 1'b1;
                     end
-                end
-                
-                default: begin
-                    // 默认状态处理
-                end
-            endcase
+                    
+                    ADDR_BITS: begin
+                        // 第1-4位：地址接收
+                        if (bit_counter >= 5'd1 && bit_counter <= 5'd4) begin
+                            addr_shift <= {addr_shift[2:0], mosi};
+                            if (bit_counter == 5'd4) begin
+                                target_addr <= {addr_shift[2:0], mosi};
+                                addr_received <= 1'b1;
+                                // 读模式时立即锁存数据
+                                if (read_mode) begin
+                                    read_data_reg <= internal_ram[{addr_shift[2:0], mosi}];
+                                end
+                            end
+                        end
+                        // 接收数据并递增计数器
+                        shift_reg <= {shift_reg[14:0], mosi};
+                        bit_counter <= bit_counter + 1'b1;
+                    end
+                    
+                    DATA_BITS: begin
+                        // 第5-15位：数据位处理
+                        if (bit_counter == 5'd15) begin
+                            if (!read_mode) begin
+                                // 写模式：直接写入RAM，立即生效
+                                internal_ram[target_addr] <= {shift_reg[9:0], mosi};
+                            end
+                            bit_counter <= 5'b0;  // 重置计数器准备下一帧
+                        end else begin
+                            // 接收数据并递增计数器
+                            shift_reg <= {shift_reg[14:0], mosi};
+                            bit_counter <= bit_counter + 1'b1;
+                        end
+                    end
+                    
+                    default: begin
+                        // 默认状态处理
+                    end
+                endcase
+            end
         end
     end
 
